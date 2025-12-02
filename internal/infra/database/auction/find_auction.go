@@ -3,6 +3,7 @@ package auction
 import (
 	"context"
 	"fmt"
+	"fullcycle-auction_go/configuration/auctionconfig"
 	"fullcycle-auction_go/configuration/logger"
 	"fullcycle-auction_go/internal/entity/auction_entity"
 	"fullcycle-auction_go/internal/internal_error"
@@ -78,4 +79,24 @@ func (repo *AuctionRepository) FindAuctions(
 	}
 
 	return auctionsEntity, nil
+}
+
+// CloseExpiredAuctions sets auctions to Completed when their duration has elapsed.
+func (repo *AuctionRepository) CloseExpiredAuctions(ctx context.Context) *internal_error.InternalError {
+	expiredThreshold := time.Now().Add(-auctionconfig.AuctionDuration()).Unix()
+
+	filter := bson.M{
+		"status":    auction_entity.Active,
+		"timestamp": bson.M{"$lte": expiredThreshold},
+	}
+	update := bson.M{
+		"$set": bson.M{"status": auction_entity.Completed},
+	}
+
+	if _, err := repo.Collection.UpdateMany(ctx, filter, update); err != nil {
+		logger.Error("Error trying to close expired auctions", err)
+		return internal_error.NewInternalServerError("Error trying to close expired auctions")
+	}
+
+	return nil
 }

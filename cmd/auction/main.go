@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"fullcycle-auction_go/configuration/auctionconfig"
 	"fullcycle-auction_go/configuration/database/mongodb"
+	"fullcycle-auction_go/configuration/logger"
 	"fullcycle-auction_go/internal/infra/api/web/controller/auction_controller"
 	"fullcycle-auction_go/internal/infra/api/web/controller/bid_controller"
 	"fullcycle-auction_go/internal/infra/api/web/controller/user_controller"
 	"fullcycle-auction_go/internal/infra/database/auction"
 	"fullcycle-auction_go/internal/infra/database/bid"
 	"fullcycle-auction_go/internal/infra/database/user"
+	"fullcycle-auction_go/internal/internal_error"
 	"fullcycle-auction_go/internal/usecase/auction_usecase"
 	"fullcycle-auction_go/internal/usecase/bid_usecase"
 	"fullcycle-auction_go/internal/usecase/user_usecase"
@@ -16,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/mongo"
 	"log"
+	"time"
 )
 
 func main() {
@@ -34,7 +38,7 @@ func main() {
 
 	router := gin.Default()
 
-	userController, bidController, auctionsController := initDependencies(databaseConnection)
+	userController, bidController, auctionsController := initDependencies(ctx, databaseConnection)
 
 	router.GET("/auction", auctionsController.FindAuctions)
 	router.GET("/auction/:auctionId", auctionsController.FindAuctionById)
@@ -47,7 +51,7 @@ func main() {
 	router.Run(":8080")
 }
 
-func initDependencies(database *mongo.Database) (
+func initDependencies(ctx context.Context, database *mongo.Database) (
 	userController *user_controller.UserController,
 	bidController *bid_controller.BidController,
 	auctionController *auction_controller.AuctionController) {
@@ -56,6 +60,8 @@ func initDependencies(database *mongo.Database) (
 	bidRepository := bid.NewBidRepository(database, auctionRepository)
 	userRepository := user.NewUserRepository(database)
 
+	startAuctionCloser(ctx, auctionRepository)
+
 	userController = user_controller.NewUserController(
 		user_usecase.NewUserUseCase(userRepository))
 	auctionController = auction_controller.NewAuctionController(
@@ -63,4 +69,32 @@ func initDependencies(database *mongo.Database) (
 	bidController = bid_controller.NewBidController(bid_usecase.NewBidUseCase(bidRepository))
 
 	return
+}
+
+type auctionCloser interface {
+	CloseExpiredAuctions(ctx context.Context) *internal_error.InternalError
+}
+
+func startAuctionCloser(ctx context.Context, auctionRepo auctionCloser) {
+	checkInterval := auctionconfig.AuctionDuration() / 2
+	if checkInterval < time.Second {
+		checkInterval = time.Second
+	}
+
+	go func() {
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := auctionRepo.CloseExpiredAuctions(ctx); err != nil {
+					logger.Error("Error trying to close expired auctions", err)
+				}
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			}
+		}
+	}()
 }
